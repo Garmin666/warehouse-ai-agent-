@@ -1,4 +1,4 @@
-"""仓库货架两时段入库/出库线性规划（基于 HiGHS 求解器强化版）。"""
+"""仓库货架两时段入库/出库线性规划（极致稳定版）。"""
 from __future__ import annotations
 import pulp
 
@@ -15,7 +15,7 @@ def run_model(inbound=32, outbound=31, costs=None):
     if inbound < 0 or outbound < 0:
         return {"status": "Infeasible", "error_reason": "入库量和出库量不能为负数。", "total_cost": None, "schedule": [], "shadow_prices": {}}
 
-    # 提前检查物理极限
+    # 1. 物理极限预检
     max_in_capacity = n_shelves * len(PERIODS) * CAPACITY
     max_out_capacity = n_shelves * len(PERIODS) * CAPACITY
 
@@ -32,35 +32,30 @@ def run_model(inbound=32, outbound=31, costs=None):
             "total_cost": None, "schedule": [], "shadow_prices": {}
         }
 
-    # ==========================================
-    # 1. 求解主模型（排班与总成本）- 整数规划
-    # ==========================================
+    # 2. 求解主模型（排班与总成本）
     try:
         schedule_model = _build_model(inbound, outbound, costs, integer_flows=True)
-        # 💡 换用 HiGHS 求解器
-        status = schedule_model["problem"].solve(pulp.HiGHS(msg=False, timeLimit=15))
+        # 不加 timeLimit，让它慢慢算，保证算出结果
+        status = schedule_model["problem"].solve(pulp.PULP_CBC_CMD(msg=False))
     except Exception as e:
-        return {"status": "Error", "error_reason": f"底层求解引擎崩溃: {str(e)}", "total_cost": None, "schedule": [], "shadow_prices": {}}
+        return {"status": "Error", "error_reason": f"主模型底层崩溃: {str(e)}", "total_cost": None, "schedule": [], "shadow_prices": {}}
 
     if pulp.LpStatus[status] != "Optimal":
         return {
             "status": "Infeasible",
-            "error_reason": f"由于库存平衡或时段容量限制，模型无法找到合理的排班方案。求解器状态: {pulp.LpStatus[status]}",
+            "error_reason": f"由于库存平衡或时段限制，模型无解。求解器状态: {pulp.LpStatus[status]}",
             "total_cost": None, "schedule": [], "shadow_prices": {}
         }
 
-    # ==========================================
-    # 2. 求解对偶模型（敏感性分析/影子价格）- 线性松弛
-    # ==========================================
+    # 3. 求解对偶模型（敏感性分析/影子价格）—— 独立隔离，崩了也不影响主结果
     shadow_prices = {}
     try:
         dual_model = _build_model(inbound, outbound, costs, integer_flows=False)
-        # 💡 同样使用 HiGHS，对偶值提取极快极稳
-        dual_model["problem"].solve(pulp.HiGHS(msg=False, timeLimit=15))
+        dual_model["problem"].solve(pulp.PULP_CBC_CMD(msg=False))
         shadow_prices = _read_shadow_prices(dual_model)
     except Exception as e:
-        print(f"⚠️ 影子价格计算失败: {e}")
-        shadow_prices = {"error": "计算影子价格失败"}
+        print(f"⚠️ 影子价格计算异常（不影响主排班）: {e}")
+        shadow_prices = {}
 
     return {
         "status": "Optimal",
@@ -112,7 +107,6 @@ def _build_model(inbound, outbound, costs, integer_flows):
 
     return {"problem": problem, "in_flow": in_flow, "out_flow": out_flow, "stock": stock, "constraints": constraints, "costs": costs}
 
-
 def _read_schedule(model):
     schedule = []
     for i, cost in enumerate(model["costs"]):
@@ -126,13 +120,11 @@ def _read_schedule(model):
             })
     return schedule
 
-
 def _dual(constraint):
     try:
         return round(float(constraint.pi), 6) if constraint.pi is not None else 0.0
     except Exception:
         return 0.0
-
 
 def _read_shadow_prices(model):
     if not model.get("constraints"): return {}

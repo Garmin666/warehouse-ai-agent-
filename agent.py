@@ -1,9 +1,4 @@
-"""仓库排班运筹助手。
-
-通过 OpenAI Function Calling 调用 solver.run_model，
-支持动态货架数量，能够智能解释模型无解的原因。
-"""
-
+"""仓库排班运筹助手。"""
 from __future__ import annotations
 import json
 import os
@@ -11,10 +6,6 @@ from pathlib import Path
 from openai import OpenAI
 from solver import run_model
 
-# ==========================================
-# 1. 密钥读取逻辑（兼容本地和云端）
-# ==========================================
-# 尝试从 Streamlit Cloud 的 Secrets 读取
 try:
     import streamlit as st
     if "ZHIPU_API_KEY" in st.secrets:
@@ -22,7 +13,6 @@ try:
 except Exception:
     pass
 
-# 尝试从本地 .env 读取（如果在本地运行且安装了 dotenv）
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).with_name(".env"))
@@ -31,45 +21,30 @@ except ImportError:
 
 ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/"
 
-# ==========================================
-# 2. 系统提示词（强化了无解时的解释能力）
-# ==========================================
 SYSTEM_PROMPT = (
     "你是一个资深的供应链运筹学专家。你拥有一个仓库排班的线性规划模型。"
     "当用户询问假设性问题时，请调用工具重新计算。"
-    "【重要规则】如果工具返回的 status 是 'Infeasible'，说明当前任务在物理上无法完成。"
-    "此时，你必须读取返回中的 `error_reason`，并用非常专业但通俗的大白话向用户解释为什么做不到"
-    "（例如：是货架数量太少导致容量爆满？还是入库和出库的数量不平衡导致了死锁？），"
-    "并给出具体的建议（比如建议增加货架、或者调整发货量）。"
-    "如果算出了结果，当用户问及‘多搬一批会怎样’，你需要提取返回数据中的 `shadow_total_inbound` 或 `shadow_total_outbound`（影子价格）并解释其经济学含义；"
-    "如果用户改变成本，调用工具后对比 `total_cost` 的变化并给出原因。"
+    "【必须遵守的规则】"
+    "1. 如果工具返回 status='Infeasible'，说明任务在物理上无法完成，请根据返回的 `error_reason` 向用户解释原因并给出建议。"
+    "2. 如果工具返回 status='Error'，说明底层服务器崩溃了，请直接道歉并让用户稍后再试，绝对不要自行猜测计算结果！"
+    "3. 如果工具返回 status='Optimal'，请直接告诉用户 `total_cost`（最优总成本）。"
+    "4. 如果用户问及敏感性分析，提取 `shadow_total_inbound` 和 `shadow_total_outbound`（影子价格）并向用户解释其含义（即每增加1批需求，总成本会增加的金额）。"
 )
 
-# 基准情景（默认货架成本列表，前端传过来的会覆盖它）
 BASELINE = {"inbound": 32, "outbound": 31, "costs": [1, 2, 2, 3]}
 
-# ==========================================
-# 3. 工具定义
-# ==========================================
 TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "run_warehouse_optimization",
-            "description": (
-                "求解任意数量货架、上午/下午两个时段的仓库入库与出库排班，最小化搬运总成本。"
-                "每个货架每个时段的入库、出库和期末库存容量都是 4。"
-                "返回 total_cost（最优总成本）、status（状态）、error_reason（无解原因），以及总进/出库的影子价格。"
-            ),
+            "description": "求解仓库排班，返回最优总成本、状态和总进/出库影子价格。",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "inbound": {"type": "integer", "description": "入库总需求（批）。"},
                     "outbound": {"type": "integer", "description": "出库总需求（批）。"},
-                    "costs": {
-                        "type": "array", "items": {"type": "number"},
-                        "description": "各个货架的单位搬运成本列表，长度决定货架数量。例如 [1, 2, 2, 3]。",
-                    },
+                    "costs": {"type": "array", "items": {"type": "number"}, "description": "货架成本列表，长度决定货架数量。"},
                 },
                 "required": ["inbound", "outbound", "costs"],
                 "additionalProperties": False,
@@ -78,31 +53,26 @@ TOOLS = [
     }
 ]
 
-
 def run_warehouse_optimization(inbound=32, outbound=31, costs=None):
-    """调用底层模型，并精简返回给大模型的数据，防止模型因为 JSON 过长而崩溃。"""
     if costs is None:
         costs = list(BASELINE["costs"])
-    
     result = run_model(inbound=int(inbound), outbound=int(outbound), costs=[float(cost) for cost in costs])
+    shadow = result.get("shadow_prices", {})
     
-    # 只把最核心的数据返回给 AI，去掉庞大的 schedule（排班表）
-    shadow_prices = result.get("shadow_prices", {})
+    # 只返回 AI 最需要的数据，坚决不给庞大的排班细节
     return {
         "total_cost": result.get("total_cost"),
         "status": result.get("status"),
         "error_reason": result.get("error_reason", ""),
-        "shadow_total_inbound": shadow_prices.get("total_inbound"),
-        "shadow_total_outbound": shadow_prices.get("total_outbound"),
+        "shadow_total_inbound": shadow.get("total_inbound"),
+        "shadow_total_outbound": shadow.get("total_outbound"),
     }
-
 
 def _client():
     api_key = os.environ.get("ZHIPU_API_KEY")
     if not api_key:
-        raise RuntimeError("未设置 ZHIPU_API_KEY，请在本地 .env 或云端 Secrets 中配置。")
+        raise RuntimeError("未设置 ZHIPU_API_KEY。")
     return OpenAI(api_key=api_key, base_url=ZHIPU_BASE_URL)
-
 
 def _execute_tool_call(tool_call):
     name = tool_call.function.name
@@ -110,7 +80,7 @@ def _execute_tool_call(tool_call):
     try:
         arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else dict(raw_arguments)
     except json.JSONDecodeError as exc:
-        return json.dumps({"error": f"工具参数不是合法 JSON: {exc}"}, ensure_ascii=False)
+        return json.dumps({"error": f"参数不是合法 JSON: {exc}"}, ensure_ascii=False)
 
     if name != "run_warehouse_optimization":
         return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
@@ -125,12 +95,10 @@ def _execute_tool_call(tool_call):
         payload = {"status": "Error", "error_reason": str(exc)}
     return json.dumps(payload, ensure_ascii=False)
 
-
 def chat_with_agent(user_input):
-    """接收一句用户输入，循环处理 tool_calls，直到模型给出最终回答。"""
     text = (user_input or "").strip()
     if not text:
-        return "请输入一个关于仓库排班、搬运成本或影子价格的问题。"
+        return "请输入一个关于仓库排班的问题。"
 
     if not hasattr(chat_with_agent, "messages"):
         chat_with_agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -139,14 +107,16 @@ def chat_with_agent(user_input):
     messages.append({"role": "user", "content": text})
 
     client = _client()
-    
-    # 💡 把默认模型改成了 air，比 flash 更聪明，能更好地理解工具返回的数据
     model = os.environ.get("ZHIPU_MODEL", "glm-4-air")
 
     for _ in range(8):
-        response = client.chat.completions.create(
-            model=model, messages=messages, tools=TOOLS, tool_choice="auto",
-        )
+        try:
+            response = client.chat.completions.create(
+                model=model, messages=messages, tools=TOOLS, tool_choice="auto",
+            )
+        except Exception as e:
+            return f"❌ API 调用失败：{str(e)}"
+            
         message = response.choices[0].message
         messages.append(message.model_dump(exclude_none=True))
 
@@ -163,27 +133,7 @@ def chat_with_agent(user_input):
                 }
             )
 
-    return "工具调用次数过多，本轮没有得到最终回答。请把问题再具体一点。"
-
+    return "工具调用次数过多，没有得到最终回答。"
 
 def reset_conversation():
-    """清空多轮对话历史，下一轮从系统提示重新开始。"""
     chat_with_agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-
-
-if __name__ == "__main__":
-    print("仓库运筹助手。输入问题后回车；输入 quit 退出，输入 reset 清空上下文。")
-    while True:
-        try:
-            user_text = input("你: ")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        command = user_text.strip().lower()
-        if command in {"quit", "exit", "q"}:
-            break
-        if command == "reset":
-            reset_conversation()
-            print("助手: 对话已重置。")
-            continue
-        print("助手:", chat_with_agent(user_text))
