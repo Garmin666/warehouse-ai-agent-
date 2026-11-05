@@ -14,6 +14,7 @@ from solver import run_model
 # ==========================================
 # 1. 密钥读取逻辑（兼容本地和云端）
 # ==========================================
+# 尝试从 Streamlit Cloud 的 Secrets 读取
 try:
     import streamlit as st
     if "ZHIPU_API_KEY" in st.secrets:
@@ -21,6 +22,7 @@ try:
 except Exception:
     pass
 
+# 尝试从本地 .env 读取（如果在本地运行且安装了 dotenv）
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).with_name(".env"))
@@ -39,11 +41,11 @@ SYSTEM_PROMPT = (
     "此时，你必须读取返回中的 `error_reason`，并用非常专业但通俗的大白话向用户解释为什么做不到"
     "（例如：是货架数量太少导致容量爆满？还是入库和出库的数量不平衡导致了死锁？），"
     "并给出具体的建议（比如建议增加货架、或者调整发货量）。"
-    "如果算出了结果，当用户问及‘多搬一批会怎样’，你需要提取‘影子价格(Shadow Price)’并解释；"
-    "如果用户改变成本，调用工具后对比成本变化并给出原因。"
+    "如果算出了结果，当用户问及‘多搬一批会怎样’，你需要提取返回数据中的 `shadow_total_inbound` 或 `shadow_total_outbound`（影子价格）并解释其经济学含义；"
+    "如果用户改变成本，调用工具后对比 `total_cost` 的变化并给出原因。"
 )
 
-# 基准情景
+# 基准情景（默认货架成本列表，前端传过来的会覆盖它）
 BASELINE = {"inbound": 32, "outbound": 31, "costs": [1, 2, 2, 3]}
 
 # ==========================================
@@ -57,7 +59,7 @@ TOOLS = [
             "description": (
                 "求解任意数量货架、上午/下午两个时段的仓库入库与出库排班，最小化搬运总成本。"
                 "每个货架每个时段的入库、出库和期末库存容量都是 4。"
-                "返回 total_cost（最优总成本）、schedule（排班）、status（状态）和 error_reason（无解原因）。"
+                "返回 total_cost（最优总成本）、status（状态）、error_reason（无解原因），以及总进/出库的影子价格。"
             ),
             "parameters": {
                 "type": "object",
@@ -78,16 +80,20 @@ TOOLS = [
 
 
 def run_warehouse_optimization(inbound=32, outbound=31, costs=None):
+    """调用底层模型，并精简返回给大模型的数据，防止模型因为 JSON 过长而崩溃。"""
     if costs is None:
         costs = list(BASELINE["costs"])
+    
     result = run_model(inbound=int(inbound), outbound=int(outbound), costs=[float(cost) for cost in costs])
     
+    # 只把最核心的数据返回给 AI，去掉庞大的 schedule（排班表）
+    shadow_prices = result.get("shadow_prices", {})
     return {
         "total_cost": result.get("total_cost"),
-        "schedule": result.get("schedule"),
-        "shadow_prices": result.get("shadow_prices"),
         "status": result.get("status"),
-        "error_reason": result.get("error_reason", "")
+        "error_reason": result.get("error_reason", ""),
+        "shadow_total_inbound": shadow_prices.get("total_inbound"),
+        "shadow_total_outbound": shadow_prices.get("total_outbound"),
     }
 
 
@@ -121,6 +127,7 @@ def _execute_tool_call(tool_call):
 
 
 def chat_with_agent(user_input):
+    """接收一句用户输入，循环处理 tool_calls，直到模型给出最终回答。"""
     text = (user_input or "").strip()
     if not text:
         return "请输入一个关于仓库排班、搬运成本或影子价格的问题。"
@@ -132,7 +139,9 @@ def chat_with_agent(user_input):
     messages.append({"role": "user", "content": text})
 
     client = _client()
-    model = os.environ.get("ZHIPU_MODEL", "glm-4-flash")
+    
+    # 💡 把默认模型改成了 air，比 flash 更聪明，能更好地理解工具返回的数据
+    model = os.environ.get("ZHIPU_MODEL", "glm-4-air")
 
     for _ in range(8):
         response = client.chat.completions.create(
@@ -158,7 +167,7 @@ def chat_with_agent(user_input):
 
 
 def reset_conversation():
-    """清空多轮对话历史。"""
+    """清空多轮对话历史，下一轮从系统提示重新开始。"""
     chat_with_agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
 
