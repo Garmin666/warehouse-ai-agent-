@@ -6,6 +6,7 @@ from pathlib import Path
 from openai import OpenAI
 from solver import run_model
 
+# 兼容云端 Secrets
 try:
     import streamlit as st
     if "ZHIPU_API_KEY" in st.secrets:
@@ -13,6 +14,7 @@ try:
 except Exception:
     pass
 
+# 兼容本地 .env
 try:
     from dotenv import load_dotenv
     load_dotenv(Path(__file__).with_name(".env"))
@@ -21,14 +23,16 @@ except ImportError:
 
 ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/"
 
+# 关键修改：让大模型始终使用用户提问的语言来回复
 SYSTEM_PROMPT = (
-    "你是一个资深的供应链运筹学专家。你拥有一个仓库排班的线性规划模型。"
-    "当用户询问假设性问题时，请调用工具重新计算。"
-    "【必须遵守的规则】"
-    "1. 如果工具返回 status='Infeasible'，说明任务在物理上无法完成，请根据返回的 `error_reason` 向用户解释原因并给出建议。"
-    "2. 如果工具返回 status='Error'，说明底层服务器崩溃了，请直接道歉并让用户稍后再试，绝对不要自行猜测计算结果！"
-    "3. 如果工具返回 status='Optimal'，请直接告诉用户 `total_cost`（最优总成本）。"
-    "4. 如果用户问及敏感性分析，提取 `shadow_total_inbound` 和 `shadow_total_outbound`（影子价格）并向用户解释其含义（即每增加1批需求，总成本会增加的金额）。"
+    "You are a senior Supply Chain Operations Research Expert. You have a linear programming model for warehouse scheduling.\n"
+    "IMPORTANT RULE: You MUST ALWAYS respond in the exact same language as the user's question. "
+    "If the user asks in English, you MUST reply in English. If the user asks in Chinese, reply in Chinese.\n\n"
+    "When the user asks hypothetical questions, please call the tool to recalculate.\n"
+    "1. If the tool returns status='Infeasible', explain the `error_reason` to the user in plain language and provide suggestions.\n"
+    "2. If the tool returns status='Error', apologize and ask the user to try again later. DO NOT make up results!\n"
+    "3. If the tool returns status='Optimal', tell the user the `total_cost` (optimal total cost).\n"
+    "4. If the user asks for sensitivity analysis, extract `shadow_total_inbound` and `shadow_total_outbound` (shadow prices) and explain their economic meaning (i.e., how much the total cost increases if the demand increases by 1 batch)."
 )
 
 BASELINE = {"inbound": 32, "outbound": 31, "costs": [1, 2, 2, 3]}
@@ -38,13 +42,13 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "run_warehouse_optimization",
-            "description": "求解仓库排班，返回最优总成本、状态和总进/出库影子价格。",
+            "description": "Solve warehouse scheduling. Returns total_cost, status, and shadow prices for total inbound/outbound.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "inbound": {"type": "integer", "description": "入库总需求（批）。"},
-                    "outbound": {"type": "integer", "description": "出库总需求（批）。"},
-                    "costs": {"type": "array", "items": {"type": "number"}, "description": "货架成本列表，长度决定货架数量。"},
+                    "inbound": {"type": "integer", "description": "Total inbound demand (batches)."},
+                    "outbound": {"type": "integer", "description": "Total outbound demand (batches)."},
+                    "costs": {"type": "array", "items": {"type": "number"}, "description": "List of shelf costs. Length determines the number of shelves."},
                 },
                 "required": ["inbound", "outbound", "costs"],
                 "additionalProperties": False,
@@ -59,7 +63,6 @@ def run_warehouse_optimization(inbound=32, outbound=31, costs=None):
     result = run_model(inbound=int(inbound), outbound=int(outbound), costs=[float(cost) for cost in costs])
     shadow = result.get("shadow_prices", {})
     
-    # 只返回 AI 最需要的数据，坚决不给庞大的排班细节
     return {
         "total_cost": result.get("total_cost"),
         "status": result.get("status"),
@@ -71,7 +74,7 @@ def run_warehouse_optimization(inbound=32, outbound=31, costs=None):
 def _client():
     api_key = os.environ.get("ZHIPU_API_KEY")
     if not api_key:
-        raise RuntimeError("未设置 ZHIPU_API_KEY。")
+        raise RuntimeError("ZHIPU_API_KEY is not set.")
     return OpenAI(api_key=api_key, base_url=ZHIPU_BASE_URL)
 
 def _execute_tool_call(tool_call):
@@ -80,10 +83,10 @@ def _execute_tool_call(tool_call):
     try:
         arguments = json.loads(raw_arguments) if isinstance(raw_arguments, str) else dict(raw_arguments)
     except json.JSONDecodeError as exc:
-        return json.dumps({"error": f"参数不是合法 JSON: {exc}"}, ensure_ascii=False)
+        return json.dumps({"error": f"Invalid JSON: {exc}"}, ensure_ascii=False)
 
     if name != "run_warehouse_optimization":
-        return json.dumps({"error": f"未知工具: {name}"}, ensure_ascii=False)
+        return json.dumps({"error": f"Unknown tool: {name}"}, ensure_ascii=False)
 
     try:
         payload = run_warehouse_optimization(
@@ -98,7 +101,7 @@ def _execute_tool_call(tool_call):
 def chat_with_agent(user_input):
     text = (user_input or "").strip()
     if not text:
-        return "请输入一个关于仓库排班的问题。"
+        return "Please enter a question."
 
     if not hasattr(chat_with_agent, "messages"):
         chat_with_agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -115,7 +118,7 @@ def chat_with_agent(user_input):
                 model=model, messages=messages, tools=TOOLS, tool_choice="auto",
             )
         except Exception as e:
-            return f"❌ API 调用失败：{str(e)}"
+            return f"❌ API Error: {str(e)}"
             
         message = response.choices[0].message
         messages.append(message.model_dump(exclude_none=True))
@@ -133,7 +136,7 @@ def chat_with_agent(user_input):
                 }
             )
 
-    return "工具调用次数过多，没有得到最终回答。"
+    return "Too many tool calls. No final answer generated."
 
 def reset_conversation():
     chat_with_agent.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
