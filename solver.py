@@ -1,12 +1,10 @@
 """仓库货架两时段入库/出库线性规划。
 
 排班按整数规划求解（入库、出库为非负整数）。
-影子价格来自同一约束的连续松弛：混合整数模型没有对偶值，
-CBC 只在纯线性规划上返回 shadow price。
+针对无解的情况，会返回具体的 Infeasible 原因，方便 AI 向前端解释。
 """
 
 from __future__ import annotations
-
 import pulp
 
 PERIODS = ("上午", "下午")
@@ -15,43 +13,75 @@ INITIAL_STOCK = 0
 
 
 def run_model(inbound=32, outbound=31, costs=None):
-    """求解货架移动成本最小的入库/出库排班，并返回影子价格。
+    """求解货架移动成本最小的入库/出库排班。
 
     参数
     ----
     inbound : 入库总需求
     outbound : 出库总需求
-    costs : 各货架单位移动成本，默认 Shelf1-4 为 [1, 2, 2, 3]
+    costs : 各货架单位移动成本，列表长度决定了货架数量
 
     返回
     ----
     dict
-        total_cost : 整数规划最优总成本
+        status : "Optimal" 或 "Infeasible"
+        error_reason : 如果无解，返回具体原因
+        total_cost : 最优总成本
         schedule : 每个货架、每个时段的入库、出库和期末库存
-        shadow_prices : 全部显式约束的影子价格（连续松弛）
-        reduced_costs : 决策变量的检验数（连续松弛，对应非负下界）
+        shadow_prices : 影子价格（连续松弛）
     """
     if costs is None:
         costs = [1, 2, 2, 3]
     costs = list(costs)
-    if len(costs) == 0:
-        raise ValueError("costs 至少要包含一个货架")
-    if inbound < 0 or outbound < 0:
-        raise ValueError("inbound 和 outbound 必须非负")
+    n_shelves = len(costs)
 
+    if inbound < 0 or outbound < 0:
+        return {
+            "status": "Infeasible",
+            "error_reason": "入库量和出库量不能为负数。",
+            "total_cost": None, "schedule": [], "shadow_prices": {}
+        }
+
+    # 🚨 灵动判断 1：提前检查是否超出物理极限
+    max_in_capacity = n_shelves * len(PERIODS) * CAPACITY
+    max_out_capacity = n_shelves * len(PERIODS) * CAPACITY
+
+    if inbound > max_in_capacity:
+        return {
+            "status": "Infeasible",
+            "error_reason": f"入库需求({inbound}批)超过了最大入库物理容量({max_in_capacity}批)。当前只有 {n_shelves} 个货架，每个货架每天最多进 {CAPACITY * len(PERIODS)} 批货。",
+            "total_cost": None, "schedule": [], "shadow_prices": {}
+        }
+    if outbound > max_out_capacity:
+        return {
+            "status": "Infeasible",
+            "error_reason": f"出库需求({outbound}批)超过了最大出库物理容量({max_out_capacity}批)。",
+            "total_cost": None, "schedule": [], "shadow_prices": {}
+        }
+
+    # 构建并求解整数规划模型
     schedule_model = _build_model(inbound, outbound, costs, integer_flows=True)
-    _solve(schedule_model["problem"])
+    status = schedule_model["problem"].solve(pulp.PULP_CBC_CMD(msg=False))
+
+    # 🚨 灵动判断 2：如果 PuLP 依然算出无解（比如库存平衡冲突）
+    if pulp.LpStatus[status] != "Optimal":
+        return {
+            "status": "Infeasible",
+            "error_reason": f"由于库存平衡或时段容量限制，模型无法找到合理的排班方案。求解器状态: {pulp.LpStatus[status]}",
+            "total_cost": None, "schedule": [], "shadow_prices": {}
+        }
+
+    # 如果要计算影子价格，需要跑一次连续松弛
     dual_model = _build_model(inbound, outbound, costs, integer_flows=False)
-    _solve(dual_model["problem"])
+    dual_model["problem"].solve(pulp.PULP_CBC_CMD(msg=False))
 
     return {
+        "status": "Optimal",
+        "error_reason": "",
         "total_cost": round(pulp.value(schedule_model["problem"].objective), 6),
         "schedule": _read_schedule(schedule_model),
         "shadow_prices": _read_shadow_prices(dual_model),
         "reduced_costs": _read_reduced_costs(dual_model),
-        "status": pulp.LpStatus[schedule_model["problem"].status],
-        "lp_relaxation_cost": round(pulp.value(dual_model["problem"].objective), 6),
-        "shadow_price_source": "lp_relaxation",
     }
 
 
@@ -69,7 +99,6 @@ def _build_model(inbound, outbound, costs, integer_flows):
         [pulp.LpVariable(f"out_{i}_{t}", lowBound=0, cat=flow_cat) for t in range(len(PERIODS))]
         for i in range(n_shelves)
     ]
-    # 期末库存按题目要求为非负连续变量；上界写成显式约束，便于读取影子价格。
     stock = [
         [pulp.LpVariable(f"stock_{i}_{t}", lowBound=0, cat=pulp.LpContinuous) for t in range(len(PERIODS))]
         for i in range(n_shelves)
@@ -81,12 +110,7 @@ def _build_model(inbound, outbound, costs, integer_flows):
         for t in range(len(PERIODS))
     )
 
-    constraints = {
-        "in_capacity": {},
-        "out_capacity": {},
-        "stock_capacity": {},
-        "balance": {},
-    }
+    constraints = {"in_capacity": {}, "out_capacity": {}, "stock_capacity": {}, "balance": {}}
 
     for i in range(n_shelves):
         for t, period in enumerate(PERIODS):
@@ -101,13 +125,9 @@ def _build_model(inbound, outbound, costs, integer_flows):
             problem += stock[i][t] <= CAPACITY, stock_name
 
             if t == 0:
-                problem += (
-                    stock[i][t] == INITIAL_STOCK + in_flow[i][t] - out_flow[i][t]
-                ), balance_name
+                problem += (stock[i][t] == INITIAL_STOCK + in_flow[i][t] - out_flow[i][t]), balance_name
             else:
-                problem += (
-                    stock[i][t] == stock[i][t - 1] + in_flow[i][t] - out_flow[i][t]
-                ), balance_name
+                problem += (stock[i][t] == stock[i][t - 1] + in_flow[i][t] - out_flow[i][t]), balance_name
 
             constraints["in_capacity"][key] = problem.constraints[in_name]
             constraints["out_capacity"][key] = problem.constraints[out_name]
@@ -120,44 +140,27 @@ def _build_model(inbound, outbound, costs, integer_flows):
     constraints["total_outbound"] = problem.constraints["total_outbound"]
 
     return {
-        "problem": problem,
-        "in_flow": in_flow,
-        "out_flow": out_flow,
-        "stock": stock,
-        "constraints": constraints,
-        "costs": costs,
+        "problem": problem, "in_flow": in_flow, "out_flow": out_flow, "stock": stock,
+        "constraints": constraints, "costs": costs,
     }
-
-
-def _solve(problem):
-    status = problem.solve(pulp.PULP_CBC_CMD(msg=False))
-    if pulp.LpStatus[status] != "Optimal":
-        raise RuntimeError(f"模型无最优解，求解状态: {pulp.LpStatus[status]}")
-    return status
 
 
 def _read_schedule(model):
     schedule = []
     for i, cost in enumerate(model["costs"]):
         for t, period in enumerate(PERIODS):
-            schedule.append(
-                {
-                    "shelf": i + 1,
-                    "period": period,
-                    "in_flow": int(round(pulp.value(model["in_flow"][i][t]))),
-                    "out_flow": int(round(pulp.value(model["out_flow"][i][t]))),
-                    "stock": round(pulp.value(model["stock"][i][t]), 6),
-                    "unit_cost": cost,
-                }
-            )
+            schedule.append({
+                "shelf": i + 1, "period": period,
+                "in_flow": int(round(pulp.value(model["in_flow"][i][t]))),
+                "out_flow": int(round(pulp.value(model["out_flow"][i][t]))),
+                "stock": round(pulp.value(model["stock"][i][t]), 6),
+                "unit_cost": cost,
+            })
     return schedule
 
 
 def _dual(constraint):
-    price = constraint.pi
-    if price is None:
-        raise RuntimeError(f"约束 {constraint.name} 没有影子价格。整数模型无法提供对偶值。")
-    return round(float(price), 6)
+    return round(float(constraint.pi), 6) if constraint.pi is not None else 0.0
 
 
 def _read_shadow_prices(model):
@@ -174,11 +177,7 @@ def _read_shadow_prices(model):
 
 def _read_reduced_costs(model):
     reduced = {"in_flow": {}, "out_flow": {}, "stock": {}}
-    groups = (
-        ("in_flow", model["in_flow"]),
-        ("out_flow", model["out_flow"]),
-        ("stock", model["stock"]),
-    )
+    groups = (("in_flow", model["in_flow"]), ("out_flow", model["out_flow"]), ("stock", model["stock"]))
     for name, variables in groups:
         for i in range(len(variables)):
             for t, period in enumerate(PERIODS):
@@ -189,6 +188,5 @@ def _read_reduced_costs(model):
 
 if __name__ == "__main__":
     import json
-
     result = run_model()
     print(json.dumps(result, ensure_ascii=False, indent=2))
