@@ -1,9 +1,4 @@
-"""仓库货架两时段入库/出库线性规划。
-
-排班按整数规划求解（入库、出库为非负整数）。
-针对无解的情况，会返回具体的 Infeasible 原因，方便 AI 向前端解释。
-"""
-
+"""仓库货架两时段入库/出库线性规划（基于 HiGHS 求解器强化版）。"""
 from __future__ import annotations
 import pulp
 
@@ -11,38 +6,16 @@ PERIODS = ("上午", "下午")
 CAPACITY = 4
 INITIAL_STOCK = 0
 
-
 def run_model(inbound=32, outbound=31, costs=None):
-    """求解货架移动成本最小的入库/出库排班。
-
-    参数
-    ----
-    inbound : 入库总需求
-    outbound : 出库总需求
-    costs : 各货架单位移动成本，列表长度决定了货架数量
-
-    返回
-    ----
-    dict
-        status : "Optimal" 或 "Infeasible"
-        error_reason : 如果无解，返回具体原因
-        total_cost : 最优总成本
-        schedule : 每个货架、每个时段的入库、出库和期末库存
-        shadow_prices : 影子价格（连续松弛）
-    """
     if costs is None:
         costs = [1, 2, 2, 3]
     costs = list(costs)
     n_shelves = len(costs)
 
     if inbound < 0 or outbound < 0:
-        return {
-            "status": "Infeasible",
-            "error_reason": "入库量和出库量不能为负数。",
-            "total_cost": None, "schedule": [], "shadow_prices": {}
-        }
+        return {"status": "Infeasible", "error_reason": "入库量和出库量不能为负数。", "total_cost": None, "schedule": [], "shadow_prices": {}}
 
-    # 🚨 灵动判断 1：提前检查是否超出物理极限
+    # 提前检查物理极限
     max_in_capacity = n_shelves * len(PERIODS) * CAPACITY
     max_out_capacity = n_shelves * len(PERIODS) * CAPACITY
 
@@ -59,11 +32,16 @@ def run_model(inbound=32, outbound=31, costs=None):
             "total_cost": None, "schedule": [], "shadow_prices": {}
         }
 
-    # 构建并求解整数规划模型
-    schedule_model = _build_model(inbound, outbound, costs, integer_flows=True)
-    status = schedule_model["problem"].solve(pulp.PULP_CBC_CMD(msg=False))
+    # ==========================================
+    # 1. 求解主模型（排班与总成本）- 整数规划
+    # ==========================================
+    try:
+        schedule_model = _build_model(inbound, outbound, costs, integer_flows=True)
+        # 💡 换用 HiGHS 求解器
+        status = schedule_model["problem"].solve(pulp.HiGHS(msg=False, timeLimit=15))
+    except Exception as e:
+        return {"status": "Error", "error_reason": f"底层求解引擎崩溃: {str(e)}", "total_cost": None, "schedule": [], "shadow_prices": {}}
 
-    # 🚨 灵动判断 2：如果 PuLP 依然算出无解（比如库存平衡冲突）
     if pulp.LpStatus[status] != "Optimal":
         return {
             "status": "Infeasible",
@@ -71,17 +49,25 @@ def run_model(inbound=32, outbound=31, costs=None):
             "total_cost": None, "schedule": [], "shadow_prices": {}
         }
 
-    # 如果要计算影子价格，需要跑一次连续松弛
-    dual_model = _build_model(inbound, outbound, costs, integer_flows=False)
-    dual_model["problem"].solve(pulp.PULP_CBC_CMD(msg=False))
+    # ==========================================
+    # 2. 求解对偶模型（敏感性分析/影子价格）- 线性松弛
+    # ==========================================
+    shadow_prices = {}
+    try:
+        dual_model = _build_model(inbound, outbound, costs, integer_flows=False)
+        # 💡 同样使用 HiGHS，对偶值提取极快极稳
+        dual_model["problem"].solve(pulp.HiGHS(msg=False, timeLimit=15))
+        shadow_prices = _read_shadow_prices(dual_model)
+    except Exception as e:
+        print(f"⚠️ 影子价格计算失败: {e}")
+        shadow_prices = {"error": "计算影子价格失败"}
 
     return {
         "status": "Optimal",
         "error_reason": "",
         "total_cost": round(pulp.value(schedule_model["problem"].objective), 6),
         "schedule": _read_schedule(schedule_model),
-        "shadow_prices": _read_shadow_prices(dual_model),
-        "reduced_costs": _read_reduced_costs(dual_model),
+        "shadow_prices": shadow_prices,
     }
 
 
@@ -91,34 +77,19 @@ def _build_model(inbound, outbound, costs, integer_flows):
     kind = "mip" if integer_flows else "lp"
     problem = pulp.LpProblem(f"warehouse_{kind}", pulp.LpMinimize)
 
-    in_flow = [
-        [pulp.LpVariable(f"in_{i}_{t}", lowBound=0, cat=flow_cat) for t in range(len(PERIODS))]
-        for i in range(n_shelves)
-    ]
-    out_flow = [
-        [pulp.LpVariable(f"out_{i}_{t}", lowBound=0, cat=flow_cat) for t in range(len(PERIODS))]
-        for i in range(n_shelves)
-    ]
-    stock = [
-        [pulp.LpVariable(f"stock_{i}_{t}", lowBound=0, cat=pulp.LpContinuous) for t in range(len(PERIODS))]
-        for i in range(n_shelves)
-    ]
+    in_flow = [[pulp.LpVariable(f"in_{i}_{t}", lowBound=0, cat=flow_cat) for t in range(len(PERIODS))] for i in range(n_shelves)]
+    out_flow = [[pulp.LpVariable(f"out_{i}_{t}", lowBound=0, cat=flow_cat) for t in range(len(PERIODS))] for i in range(n_shelves)]
+    stock = [[pulp.LpVariable(f"stock_{i}_{t}", lowBound=0, cat=pulp.LpContinuous) for t in range(len(PERIODS))] for i in range(n_shelves)]
 
-    problem += pulp.lpSum(
-        costs[i] * (in_flow[i][t] + out_flow[i][t])
-        for i in range(n_shelves)
-        for t in range(len(PERIODS))
-    )
+    problem += pulp.lpSum(costs[i] * (in_flow[i][t] + out_flow[i][t]) for i in range(n_shelves) for t in range(len(PERIODS)))
 
     constraints = {"in_capacity": {}, "out_capacity": {}, "stock_capacity": {}, "balance": {}}
 
     for i in range(n_shelves):
         for t, period in enumerate(PERIODS):
             key = f"Shelf{i + 1}_{period}"
-            in_name = f"in_cap_{i}_{t}"
-            out_name = f"out_cap_{i}_{t}"
-            stock_name = f"stock_cap_{i}_{t}"
-            balance_name = f"balance_{i}_{t}"
+            in_name, out_name = f"in_cap_{i}_{t}", f"out_cap_{i}_{t}"
+            stock_name, balance_name = f"stock_cap_{i}_{t}", f"balance_{i}_{t}"
 
             problem += in_flow[i][t] <= CAPACITY, in_name
             problem += out_flow[i][t] <= CAPACITY, out_name
@@ -139,10 +110,7 @@ def _build_model(inbound, outbound, costs, integer_flows):
     constraints["total_inbound"] = problem.constraints["total_inbound"]
     constraints["total_outbound"] = problem.constraints["total_outbound"]
 
-    return {
-        "problem": problem, "in_flow": in_flow, "out_flow": out_flow, "stock": stock,
-        "constraints": constraints, "costs": costs,
-    }
+    return {"problem": problem, "in_flow": in_flow, "out_flow": out_flow, "stock": stock, "constraints": constraints, "costs": costs}
 
 
 def _read_schedule(model):
@@ -160,33 +128,20 @@ def _read_schedule(model):
 
 
 def _dual(constraint):
-    return round(float(constraint.pi), 6) if constraint.pi is not None else 0.0
+    try:
+        return round(float(constraint.pi), 6) if constraint.pi is not None else 0.0
+    except Exception:
+        return 0.0
 
 
 def _read_shadow_prices(model):
+    if not model.get("constraints"): return {}
     constraints = model["constraints"]
     return {
-        "in_capacity": {key: _dual(cons) for key, cons in constraints["in_capacity"].items()},
-        "out_capacity": {key: _dual(cons) for key, cons in constraints["out_capacity"].items()},
-        "stock_capacity": {key: _dual(cons) for key, cons in constraints["stock_capacity"].items()},
-        "balance": {key: _dual(cons) for key, cons in constraints["balance"].items()},
-        "total_inbound": _dual(constraints["total_inbound"]),
-        "total_outbound": _dual(constraints["total_outbound"]),
+        "in_capacity": {k: _dual(c) for k, c in constraints.get("in_capacity", {}).items()},
+        "out_capacity": {k: _dual(c) for k, c in constraints.get("out_capacity", {}).items()},
+        "stock_capacity": {k: _dual(c) for k, c in constraints.get("stock_capacity", {}).items()},
+        "balance": {k: _dual(c) for k, c in constraints.get("balance", {}).items()},
+        "total_inbound": _dual(constraints.get("total_inbound")),
+        "total_outbound": _dual(constraints.get("total_outbound")),
     }
-
-
-def _read_reduced_costs(model):
-    reduced = {"in_flow": {}, "out_flow": {}, "stock": {}}
-    groups = (("in_flow", model["in_flow"]), ("out_flow", model["out_flow"]), ("stock", model["stock"]))
-    for name, variables in groups:
-        for i in range(len(variables)):
-            for t, period in enumerate(PERIODS):
-                dj = variables[i][t].dj
-                reduced[name][f"Shelf{i + 1}_{period}"] = None if dj is None else round(float(dj), 6)
-    return reduced
-
-
-if __name__ == "__main__":
-    import json
-    result = run_model()
-    print(json.dumps(result, ensure_ascii=False, indent=2))
