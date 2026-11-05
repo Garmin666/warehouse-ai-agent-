@@ -26,13 +26,15 @@ def run_model(inbound=32, outbound=31, costs=None):
         return {
             "status": "Infeasible",
             "error_reason": f"入库需求({inbound}批)超过了最大入库物理容量({max_in_capacity}批)。当前只有 {n_shelves} 个货架，每个货架每天最多进 {CAPACITY * T} 批货。",
-            "total_cost": None, "schedule": [], "shadow_prices": {}
+            "total_cost": None, "schedule": [], "shadow_prices": {},
+            "max_in_capacity": max_in_capacity, "max_out_capacity": max_out_capacity
         }
     if outbound > max_out_capacity:
         return {
             "status": "Infeasible",
             "error_reason": f"出库需求({outbound}批)超过了最大出库物理容量({max_out_capacity}批)。",
-            "total_cost": None, "schedule": [], "shadow_prices": {}
+            "total_cost": None, "schedule": [], "shadow_prices": {},
+            "max_in_capacity": max_in_capacity, "max_out_capacity": max_out_capacity
         }
 
     n_vars = 3 * n_shelves * T
@@ -144,4 +146,7 @@ def run_model(inbound=32, outbound=31, costs=None):
         "total_cost": round(res.fun, 6),
         "schedule": schedule,
         "shadow_prices": shadow_prices,
+        # 👇 核心：无论是否有解，都把物理上限告诉 AI
+        "max_in_capacity": max_in_capacity,
+        "max_out_capacity": max_out_capacity
     }
