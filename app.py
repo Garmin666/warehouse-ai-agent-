@@ -45,15 +45,12 @@ translations = {
 # ==========================================
 # 2. 顶部语言切换与标题区域
 # ==========================================
-# 初始化 session_state 中的语言设置
 if "lang" not in st.session_state:
     st.session_state.lang = "zh"
 
-# 页面顶部布局：左侧是标题，右侧是语言切换
 col1, col2 = st.columns([4, 1])
 
 with col2:
-    # 切换语言按钮
     lang_choice = st.radio(
         "Language", 
         options=["中文", "English"], 
@@ -61,13 +58,11 @@ with col2:
         horizontal=True,
         label_visibility="collapsed"
     )
-    # 更新语言状态
     new_lang = "zh" if lang_choice == "中文" else "en"
     if new_lang != st.session_state.lang:
         st.session_state.lang = new_lang
         st.rerun()
 
-# 获取当前语言的文本字典
 t = translations[st.session_state.lang]
 
 with col1:
@@ -81,17 +76,22 @@ with st.sidebar:
     st.header(t["sidebar_header"])
     st.markdown(t["sidebar_desc"])
     
+    # 默认入库和出库给大一点，方便测试大货架模型
     inbound = st.number_input(t["inbound_label"], min_value=0, value=32, step=1)
     outbound = st.number_input(t["outbound_label"], min_value=0, value=31, step=1)
     
     st.subheader(t["cost_header"])
-    num_shelves = st.slider(t["num_shelves"], min_value=1, max_value=10, value=4)
+    
+    # 💡 修改点 1：把最大值改为 101
+    num_shelves = st.slider(t["num_shelves"], min_value=1, max_value=101, value=4)
     
     costs = []
-    cols = st.columns(2)
+    # 💡 修改点 2：改为 4 列排布，防止 101 个输入框把页面撑得太长
+    cols = st.columns(4)
     for i in range(num_shelves):
         default_cost = i + 1
-        with cols[i % 2]:
+        with cols[i % 4]:
+            # 为了不让 UI 卡顿，这里改一下 label 的字体大小（可选）
             c = st.number_input(
                 t["shelf_cost"].format(i + 1), 
                 min_value=0.0, 
@@ -118,16 +118,13 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 if prompt := st.chat_input(t["chat_placeholder"]):
-    # 记录用户提问
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # 调用 AI 并展示结果
     with st.chat_message("assistant"):
         with st.spinner(t["spinner"]):
             try:
-                # 参数发给大模型时，使用更规范的英文格式进行拼接，方便大模型理解
                 current_params = f"[Current Parameters] Inbound: {inbound}, Outbound: {outbound}, Shelf Costs: {costs}."
                 full_prompt = f"{current_params}\n\nUser Question: {prompt}"
                 
