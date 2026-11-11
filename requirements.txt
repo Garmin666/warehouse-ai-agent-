@@ -2,3 +2,5 @@ streamlit
 pulp
 openai
 scipy
+streamlit-lottie
+plotly
