@@ -1,6 +1,5 @@
 streamlit
-pulp
-openai
 scipy
-streamlit-lottie
-plotly
+numpy
+openai
+python-dotenv
