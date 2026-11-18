@@ -1,52 +1,56 @@
 import streamlit as st
+import base64
+import os
 from agent import chat_with_agent, reset_conversation
 
+# 页面基础配置
 st.set_page_config(page_title="Warehouse Optimization System", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 0. 注入 CSS：使用外网背景图强制测试
+# 0. 将本地图片转成 Base64 并注入 CSS（100%无视路径报错）
 # ==========================================
-st.markdown("""
-<style>
-/* 核心大招：直接针对整个 body 注入背景，无视 Streamlit 容器层级 */
-body {
-    /* 这里换成了一张外网的高清仓库图，如果这都能出来，说明网络和代码绝对没问题 */
-    background-image: linear-gradient(rgba(14, 17, 23, 0.75), rgba(14, 17, 23, 0.75)), 
-                      url("https://images.unsplash.com/photo-1553413077-190dd305871c?q=80&w=2070&auto=format&fit=crop") !important;
-    background-size: cover !important;
-    background-position: center !important;
-    background-attachment: fixed !important;
-    background-repeat: no-repeat !important;
-}
+def get_base64(bin_file):
+    with open(bin_file, 'rb') as f:
+        data = f.read()
+    return base64.b64encode(data).decode()
 
-/* 把所有透明背景的地方强制设为半透明，露出底图 */
-[data-testid="stAppViewContainer"], 
-[data-testid="stHeader"], 
-[data-testid="stToolbar"],
-[data-testid="stBottomBlockContainer"] {
-    background-color: transparent !important;
-}
-
-/* 侧边栏磨砂玻璃 */
-[data-testid="stSidebar"] {
-    background-color: rgba(14, 17, 23, 0.7) !important;
-    backdrop-filter: blur(10px) !important;
-}
-
-/* 聊天框磨砂玻璃 */
-[data-testid="stChatMessage"] {
-    background-color: rgba(30, 35, 45, 0.8) !important;
-    backdrop-filter: blur(8px) !important;
-    border-radius: 10px !important;
-    padding: 15px !important;
-}
-
-/* 强制所有文字变白 */
-h1, h2, h3, p, span, label, div {
-    color: #f8f9fa !important;
-}
-</style>
-""", unsafe_allow_html=True)
+# 检查图片是否存在
+bg_image_path = "background.jpg"  # 如果你的图片叫 background.png，请修改这里
+if os.path.exists(bg_image_path):
+    bin_str = get_base64(bg_image_path)
+    page_bg_img = f'''
+    <style>
+    .stApp {{
+        background-image: linear-gradient(rgba(14, 17, 23, 0.75), rgba(14, 17, 23, 0.75)), url("data:image/jpeg;base64,{bin_str}");
+        background-size: cover !important;
+        background-position: center !important;
+        background-attachment: fixed !important;
+        background-repeat: no-repeat !important;
+    }}
+    
+    /* 侧边栏磨砂玻璃 */
+    [data-testid="stSidebar"] {{
+        background-color: rgba(14, 17, 23, 0.6) !important;
+        backdrop-filter: blur(10px) !important;
+    }}
+    
+    /* 聊天框磨砂玻璃 */
+    [data-testid="stChatMessage"] {{
+        background-color: rgba(30, 35, 45, 0.8) !important;
+        backdrop-filter: blur(8px) !important;
+        border-radius: 10px !important;
+    }}
+    
+    /* 强开文字白色 */
+    h1, h2, h3, p, span, label, div {{
+        color: #f8f9fa !important;
+    }}
+    </style>
+    '''
+    st.markdown(page_bg_img, unsafe_allow_html=True)
+else:
+    # 如果找不到图，网页左上角会弹红牌警告，让你知道是图没传对
+    st.error(f"❌ 找不到背景图片：{bg_image_path}。请确保图片与 app.py 在同一目录，且后缀名正确！")
 
 # ==========================================
 # 1. 多语言字典
@@ -102,7 +106,7 @@ with col1:
     st.caption(t["caption"])
 
 # ==========================================
-# 2. 侧边栏
+# 2. 侧边栏：参数控制
 # ==========================================
 with st.sidebar:
     st.header(t["sidebar_header"])
@@ -128,7 +132,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 3. 主界面
+# 3. 主界面：聊天记录与输入
 # ==========================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
