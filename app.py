@@ -43,7 +43,7 @@ if os.path.exists(bg_image_path):
     
     /* 3. 侧边栏磨砂玻璃（调低了透明度和模糊度，变得更清透） */
     [data-testid="stSidebar"] {{
-        background-color: rgba(14, 17, 23, 0.35) !important;
+        background-color: rgba(14, 17, 23, 0.15) !important;
         backdrop-filter: blur(8px) !important;
     }}
     
@@ -57,7 +57,7 @@ if os.path.exists(bg_image_path):
     
     /* 5. 聊天气泡磨砂效果 */
     [data-testid="stChatMessage"] {{
-        background-color: rgba(30, 35, 45, 0.8) !important;
+        background-color: rgba(30, 35, 45, 0.4) !important;
         backdrop-filter: blur(8px) !important;
         border-radius: 10px !important;
         padding: 15px !important;
