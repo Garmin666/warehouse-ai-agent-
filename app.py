@@ -5,51 +5,53 @@ from agent import chat_with_agent, reset_conversation
 st.set_page_config(page_title="Warehouse Optimization System", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 0. 注入 CSS：真实的仓库图片背景 + 半透明遮罩
+# 0. 注入 CSS：真实的仓库图片背景 + 半透明磨砂遮罩
 # ==========================================
 st.markdown("""
 <style>
-/* 顶部透明 */
+/* 去除顶部默认背景，让图片延伸上去 */
 .stApp > header {
     background-color: transparent;
 }
 
-/* 背景图设置 */
-.stApp {
-    /* 注意：这里读取同目录下的 background.jpg */
-    background-image: linear-gradient(rgba(14, 17, 23, 0.85), rgba(14, 17, 23, 0.85)), url("background.jpg");
-    background-size: cover;
-    background-position: center;
-    background-attachment: fixed;
+/* 强制将底层容器设置为背景图，并加上深色遮罩以保证文字清晰 */
+[data-testid="stAppViewContainer"] {
+    background-image: linear-gradient(rgba(14, 17, 23, 0.8), rgba(14, 17, 23, 0.8)), url("background.jpg") !important;
+    background-size: cover !important;
+    background-position: center !important;
+    background-attachment: fixed !important;
+    background-repeat: no-repeat !important;
 }
 
-/* 让侧边栏也变成半透明磨砂玻璃效果 */
+/* 侧边栏：半透明磨砂玻璃效果 */
 [data-testid="stSidebar"] {
-    background-color: rgba(14, 17, 23, 0.6) !important;
-    backdrop-filter: blur(10px);
+    background-color: rgba(14, 17, 23, 0.65) !important;
+    backdrop-filter: blur(12px) !important;
 }
 
-/* 让聊天输入框和回复框也稍微透明，融入背景 */
+/* 聊天消息框：半透明磨砂玻璃效果 */
 [data-testid="stChatMessage"] {
-    background-color: rgba(30, 35, 45, 0.7);
-    backdrop-filter: blur(5px);
-    border-radius: 10px;
-    padding: 10px;
+    background-color: rgba(30, 35, 45, 0.75) !important;
+    backdrop-filter: blur(8px) !important;
+    border-radius: 10px !important;
+    padding: 15px !important;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.3) !important;
 }
 
-/* 调整文字颜色，增强在背景上的对比度 */
-h1, h2, h3, p, span {
+/* 强制让所有标题、文本亮起来 */
+h1, h2, h3, p, span, label {
     color: #f8f9fa !important;
 }
 
-/* 修改主按钮颜色，让它更亮眼 */
-.stButton > button {
-    background-color: #3b82f6;
-    color: white;
-    border: none;
+/* 输入框自适应半透明主题 */
+.stTextInput > div > div > input, .stNumberInput > div > div > input {
+    color: white !important;
+    background-color: rgba(255, 255, 255, 0.1) !important;
 }
-.stButton > button:hover {
-    background-color: #2563eb;
+
+/* 调整底部聊天输入框，让它更像高科技面板 */
+[data-testid="stBottomBlockContainer"] {
+    background-color: transparent !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -126,7 +128,7 @@ with st.sidebar:
     st.header(t["sidebar_header"])
     st.markdown(t["sidebar_desc"])
     
-    # 针对大模型，默认值改大
+    # 针对大模型，默认值改大：入库 1150，出库 1100
     inbound = st.number_input(t["inbound_label"], min_value=0, value=1150, step=50)
     outbound = st.number_input(t["outbound_label"], min_value=0, value=1100, step=50)
     
@@ -140,7 +142,6 @@ with st.sidebar:
     for i in range(num_shelves):
         default_cost = i + 1
         with cols[i % 4]:
-            # 显式指定深色主题，确保数字看得清
             c = st.number_input(
                 t["shelf_cost"].format(i + 1), 
                 min_value=0.0, 
