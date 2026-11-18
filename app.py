@@ -7,7 +7,7 @@ from agent import chat_with_agent, reset_conversation
 st.set_page_config(page_title="Warehouse Optimization System", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 0. 将本地图片转成 Base64 并注入 CSS（彻底去黑边版）
+# 0. 将本地图片转成 Base64 并注入 CSS
 # ==========================================
 def get_base64(bin_file):
     with open(bin_file, 'rb') as f:
@@ -41,13 +41,13 @@ if os.path.exists(bg_image_path):
         border: none !important;
     }}
     
-    /* 3. 侧边栏磨砂玻璃 */
+    /* 3. 侧边栏磨砂玻璃（调低了透明度和模糊度，变得更清透） */
     [data-testid="stSidebar"] {{
-        background-color: rgba(14, 17, 23, 0.6) !important;
-        backdrop-filter: blur(12px) !important;
+        background-color: rgba(14, 17, 23, 0.35) !important;
+        backdrop-filter: blur(8px) !important;
     }}
     
-    /* 4. 聊天输入框悬浮磨砂效果（填补底部突兀感） */
+    /* 4. 聊天输入框悬浮磨砂效果 */
     [data-testid="stChatInput"] {{
         background-color: rgba(30, 35, 45, 0.85) !important;
         backdrop-filter: blur(10px) !important;
@@ -142,13 +142,10 @@ with st.sidebar:
     st.header(t["sidebar_header"])
     st.markdown(t["sidebar_desc"])
     
-    # 默认参数适配 100 货架大模型
     inbound = st.number_input(t["inbound_label"], min_value=0, value=1150, step=50)
     outbound = st.number_input(t["outbound_label"], min_value=0, value=1100, step=50)
     
     st.subheader(t["cost_header"])
-    
-    # 默认 100 个货架
     num_shelves = st.slider(t["num_shelves"], min_value=1, max_value=101, value=100)
     
     costs = []
