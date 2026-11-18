@@ -7,20 +7,19 @@ from agent import chat_with_agent, reset_conversation
 st.set_page_config(page_title="Warehouse Optimization System", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 0. 将本地图片转成 Base64 并注入 CSS（去除黑边、撑满全屏）
+# 0. 将本地图片转成 Base64 并注入 CSS（彻底去黑边版）
 # ==========================================
 def get_base64(bin_file):
     with open(bin_file, 'rb') as f:
         data = f.read()
     return base64.b64encode(data).decode()
 
-# 检查图片是否存在（注意确保你的图片名字和格式与此处完全一致）
 bg_image_path = "background.jpg"  
 if os.path.exists(bg_image_path):
     bin_str = get_base64(bg_image_path)
     page_bg_img = f'''
     <style>
-    /* 1. 把背景图直接挂在最底层，并强制铺满全屏 */
+    /* 1. 背景图铺满全屏 */
     [data-testid="stAppViewContainer"] {{
         background-image: linear-gradient(rgba(14, 17, 23, 0.75), rgba(14, 17, 23, 0.75)), url("data:image/jpeg;base64,{bin_str}");
         background-size: cover !important;
@@ -30,24 +29,33 @@ if os.path.exists(bg_image_path):
         height: 100vh !important;
     }}
     
-    /* 2. 核心：把头顶的默认黑边和底部的输入栏黑边全部变成透明 */
-    [data-testid="stHeader"] {{
-        background-color: transparent !important;
-    }}
-    [data-testid="stBottomBlockContainer"] {{
-        background-color: transparent !important;
-    }}
+    /* 2. 暴力去除所有黑边和默认背景 */
+    [data-testid="stHeader"], 
+    [data-testid="stBottom"], 
+    [data-testid="stBottom"] > div,
+    [data-testid="stBottomBlockContainer"],
+    footer,
     .stApp {{
         background-color: transparent !important;
+        background: transparent !important;
+        border: none !important;
     }}
     
     /* 3. 侧边栏磨砂玻璃 */
     [data-testid="stSidebar"] {{
-        background-color: rgba(14, 17, 23, 0.65) !important;
+        background-color: rgba(14, 17, 23, 0.6) !important;
         backdrop-filter: blur(12px) !important;
     }}
     
-    /* 4. 聊天框磨砂玻璃 */
+    /* 4. 聊天输入框悬浮磨砂效果（填补底部突兀感） */
+    [data-testid="stChatInput"] {{
+        background-color: rgba(30, 35, 45, 0.85) !important;
+        backdrop-filter: blur(10px) !important;
+        border-radius: 15px !important;
+        border: 1px solid rgba(255, 255, 255, 0.1) !important;
+    }}
+    
+    /* 5. 聊天气泡磨砂效果 */
     [data-testid="stChatMessage"] {{
         background-color: rgba(30, 35, 45, 0.8) !important;
         backdrop-filter: blur(8px) !important;
@@ -55,7 +63,7 @@ if os.path.exists(bg_image_path):
         padding: 15px !important;
     }}
     
-    /* 5. 强开文字白色 */
+    /* 6. 强开文字白色 */
     h1, h2, h3, p, span, label, div {{
         color: #f8f9fa !important;
     }}
@@ -101,7 +109,9 @@ translations = {
     }
 }
 
-# 语言切换状态
+# ==========================================
+# 2. 顶部语言切换与标题区域
+# ==========================================
 if "lang" not in st.session_state:
     st.session_state.lang = "zh"
 
@@ -126,13 +136,13 @@ with col1:
     st.caption(t["caption"])
 
 # ==========================================
-# 2. 侧边栏：参数控制
+# 3. 侧边栏：参数控制
 # ==========================================
 with st.sidebar:
     st.header(t["sidebar_header"])
     st.markdown(t["sidebar_desc"])
     
-    # 针对大模型，默认值改大：入库 1150，出库 1100
+    # 默认参数适配 100 货架大模型
     inbound = st.number_input(t["inbound_label"], min_value=0, value=1150, step=50)
     outbound = st.number_input(t["outbound_label"], min_value=0, value=1100, step=50)
     
@@ -161,7 +171,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 3. 主界面：聊天记录与输入
+# 4. 主界面：聊天记录与输入
 # ==========================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
