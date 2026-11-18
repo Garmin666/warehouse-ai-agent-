@@ -1,57 +1,49 @@
 import streamlit as st
 from agent import chat_with_agent, reset_conversation
 
-# 页面基础配置
 st.set_page_config(page_title="Warehouse Optimization System", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 0. 注入 CSS：真实的仓库图片背景 + 半透明磨砂遮罩
+# 0. 注入 CSS：使用外网背景图强制测试
 # ==========================================
 st.markdown("""
 <style>
-/* 去除顶部默认背景，让图片延伸上去 */
-.stApp > header {
-    background-color: transparent;
-}
-
-/* 强制将底层容器设置为背景图，并加上深色遮罩以保证文字清晰 */
-[data-testid="stAppViewContainer"] {
-    background-image: linear-gradient(rgba(14, 17, 23, 0.8), rgba(14, 17, 23, 0.8)), url("background.jpg") !important;
+/* 核心大招：直接针对整个 body 注入背景，无视 Streamlit 容器层级 */
+body {
+    /* 这里换成了一张外网的高清仓库图，如果这都能出来，说明网络和代码绝对没问题 */
+    background-image: linear-gradient(rgba(14, 17, 23, 0.75), rgba(14, 17, 23, 0.75)), 
+                      url("https://images.unsplash.com/photo-1553413077-190dd305871c?q=80&w=2070&auto=format&fit=crop") !important;
     background-size: cover !important;
     background-position: center !important;
     background-attachment: fixed !important;
     background-repeat: no-repeat !important;
 }
 
-/* 侧边栏：半透明磨砂玻璃效果 */
-[data-testid="stSidebar"] {
-    background-color: rgba(14, 17, 23, 0.65) !important;
-    backdrop-filter: blur(12px) !important;
+/* 把所有透明背景的地方强制设为半透明，露出底图 */
+[data-testid="stAppViewContainer"], 
+[data-testid="stHeader"], 
+[data-testid="stToolbar"],
+[data-testid="stBottomBlockContainer"] {
+    background-color: transparent !important;
 }
 
-/* 聊天消息框：半透明磨砂玻璃效果 */
+/* 侧边栏磨砂玻璃 */
+[data-testid="stSidebar"] {
+    background-color: rgba(14, 17, 23, 0.7) !important;
+    backdrop-filter: blur(10px) !important;
+}
+
+/* 聊天框磨砂玻璃 */
 [data-testid="stChatMessage"] {
-    background-color: rgba(30, 35, 45, 0.75) !important;
+    background-color: rgba(30, 35, 45, 0.8) !important;
     backdrop-filter: blur(8px) !important;
     border-radius: 10px !important;
     padding: 15px !important;
-    box-shadow: 0 4px 6px rgba(0,0,0,0.3) !important;
 }
 
-/* 强制让所有标题、文本亮起来 */
-h1, h2, h3, p, span, label {
+/* 强制所有文字变白 */
+h1, h2, h3, p, span, label, div {
     color: #f8f9fa !important;
-}
-
-/* 输入框自适应半透明主题 */
-.stTextInput > div > div > input, .stNumberInput > div > div > input {
-    color: white !important;
-    background-color: rgba(255, 255, 255, 0.1) !important;
-}
-
-/* 调整底部聊天输入框，让它更像高科技面板 */
-[data-testid="stBottomBlockContainer"] {
-    background-color: transparent !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -61,7 +53,6 @@ h1, h2, h3, p, span, label {
 # ==========================================
 translations = {
     "zh": {
-        "lang_toggle": "🌐 语言 / Language",
         "title": "📦 仓库排班智能决策系统",
         "caption": "基于运筹学（线性规划）与大语言模型的敏感性分析助手",
         "sidebar_header": "⚙️ 模型参数调节",
@@ -77,7 +68,6 @@ translations = {
         "error_prefix": "❌ 运行出错："
     },
     "en": {
-        "lang_toggle": "🌐 Language / 语言",
         "title": "📦 Smart Warehouse Scheduling System",
         "caption": "Sensitivity Analysis Assistant based on Operations Research & LLM",
         "sidebar_header": "⚙️ Model Parameters",
@@ -94,22 +84,12 @@ translations = {
     }
 }
 
-# ==========================================
-# 2. 顶部语言切换与标题区域
-# ==========================================
 if "lang" not in st.session_state:
     st.session_state.lang = "zh"
 
 col1, col2 = st.columns([4, 1])
-
 with col2:
-    lang_choice = st.radio(
-        "Language", 
-        options=["中文", "English"], 
-        index=0 if st.session_state.lang == "zh" else 1, 
-        horizontal=True,
-        label_visibility="collapsed"
-    )
+    lang_choice = st.radio("Language", options=["中文", "English"], index=0 if st.session_state.lang == "zh" else 1, horizontal=True, label_visibility="collapsed")
     new_lang = "zh" if lang_choice == "中文" else "en"
     if new_lang != st.session_state.lang:
         st.session_state.lang = new_lang
@@ -122,33 +102,23 @@ with col1:
     st.caption(t["caption"])
 
 # ==========================================
-# 3. 侧边栏：参数控制
+# 2. 侧边栏
 # ==========================================
 with st.sidebar:
     st.header(t["sidebar_header"])
     st.markdown(t["sidebar_desc"])
     
-    # 针对大模型，默认值改大：入库 1150，出库 1100
     inbound = st.number_input(t["inbound_label"], min_value=0, value=1150, step=50)
     outbound = st.number_input(t["outbound_label"], min_value=0, value=1100, step=50)
     
     st.subheader(t["cost_header"])
-    
-    # 默认 100 个货架
     num_shelves = st.slider(t["num_shelves"], min_value=1, max_value=101, value=100)
     
     costs = []
     cols = st.columns(4)
     for i in range(num_shelves):
-        default_cost = i + 1
         with cols[i % 4]:
-            c = st.number_input(
-                t["shelf_cost"].format(i + 1), 
-                min_value=0.0, 
-                value=float(default_cost), 
-                step=1.0, 
-                key=f"cost_{i}"
-            )
+            c = st.number_input(t["shelf_cost"].format(i + 1), min_value=0.0, value=float(i + 1), step=1.0, key=f"cost_{i}")
             costs.append(c)
     
     st.divider()
@@ -158,7 +128,7 @@ with st.sidebar:
         st.rerun()
 
 # ==========================================
-# 4. 主界面：聊天记录与输入
+# 3. 主界面
 # ==========================================
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -177,12 +147,9 @@ if prompt := st.chat_input(t["chat_placeholder"]):
             try:
                 current_params = f"[Current Parameters] Inbound: {inbound}, Outbound: {outbound}, Shelf Costs: {costs}."
                 full_prompt = f"{current_params}\n\nUser Question: {prompt}"
-                
                 response = chat_with_agent(full_prompt)
-                
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
-                
             except Exception as e:
                 error_msg = f"{t['error_prefix']}{str(e)}"
                 st.error(error_msg)
