@@ -7,41 +7,55 @@ from agent import chat_with_agent, reset_conversation
 st.set_page_config(page_title="Warehouse Optimization System", layout="wide", initial_sidebar_state="expanded")
 
 # ==========================================
-# 0. 将本地图片转成 Base64 并注入 CSS（100%无视路径报错）
+# 0. 将本地图片转成 Base64 并注入 CSS（去除黑边、撑满全屏）
 # ==========================================
 def get_base64(bin_file):
     with open(bin_file, 'rb') as f:
         data = f.read()
     return base64.b64encode(data).decode()
 
-# 检查图片是否存在
-bg_image_path = "background.jpg"  # 如果你的图片叫 background.png，请修改这里
+# 检查图片是否存在（注意确保你的图片名字和格式与此处完全一致）
+bg_image_path = "background.jpg"  
 if os.path.exists(bg_image_path):
     bin_str = get_base64(bg_image_path)
     page_bg_img = f'''
     <style>
-    .stApp {{
+    /* 1. 把背景图直接挂在最底层，并强制铺满全屏 */
+    [data-testid="stAppViewContainer"] {{
         background-image: linear-gradient(rgba(14, 17, 23, 0.75), rgba(14, 17, 23, 0.75)), url("data:image/jpeg;base64,{bin_str}");
         background-size: cover !important;
         background-position: center !important;
         background-attachment: fixed !important;
         background-repeat: no-repeat !important;
+        height: 100vh !important;
     }}
     
-    /* 侧边栏磨砂玻璃 */
+    /* 2. 核心：把头顶的默认黑边和底部的输入栏黑边全部变成透明 */
+    [data-testid="stHeader"] {{
+        background-color: transparent !important;
+    }}
+    [data-testid="stBottomBlockContainer"] {{
+        background-color: transparent !important;
+    }}
+    .stApp {{
+        background-color: transparent !important;
+    }}
+    
+    /* 3. 侧边栏磨砂玻璃 */
     [data-testid="stSidebar"] {{
-        background-color: rgba(14, 17, 23, 0.6) !important;
-        backdrop-filter: blur(10px) !important;
+        background-color: rgba(14, 17, 23, 0.65) !important;
+        backdrop-filter: blur(12px) !important;
     }}
     
-    /* 聊天框磨砂玻璃 */
+    /* 4. 聊天框磨砂玻璃 */
     [data-testid="stChatMessage"] {{
         background-color: rgba(30, 35, 45, 0.8) !important;
         backdrop-filter: blur(8px) !important;
         border-radius: 10px !important;
+        padding: 15px !important;
     }}
     
-    /* 强开文字白色 */
+    /* 5. 强开文字白色 */
     h1, h2, h3, p, span, label, div {{
         color: #f8f9fa !important;
     }}
@@ -49,7 +63,6 @@ if os.path.exists(bg_image_path):
     '''
     st.markdown(page_bg_img, unsafe_allow_html=True)
 else:
-    # 如果找不到图，网页左上角会弹红牌警告，让你知道是图没传对
     st.error(f"❌ 找不到背景图片：{bg_image_path}。请确保图片与 app.py 在同一目录，且后缀名正确！")
 
 # ==========================================
@@ -88,12 +101,19 @@ translations = {
     }
 }
 
+# 语言切换状态
 if "lang" not in st.session_state:
     st.session_state.lang = "zh"
 
 col1, col2 = st.columns([4, 1])
 with col2:
-    lang_choice = st.radio("Language", options=["中文", "English"], index=0 if st.session_state.lang == "zh" else 1, horizontal=True, label_visibility="collapsed")
+    lang_choice = st.radio(
+        "Language", 
+        options=["中文", "English"], 
+        index=0 if st.session_state.lang == "zh" else 1, 
+        horizontal=True, 
+        label_visibility="collapsed"
+    )
     new_lang = "zh" if lang_choice == "中文" else "en"
     if new_lang != st.session_state.lang:
         st.session_state.lang = new_lang
@@ -112,17 +132,26 @@ with st.sidebar:
     st.header(t["sidebar_header"])
     st.markdown(t["sidebar_desc"])
     
+    # 针对大模型，默认值改大：入库 1150，出库 1100
     inbound = st.number_input(t["inbound_label"], min_value=0, value=1150, step=50)
     outbound = st.number_input(t["outbound_label"], min_value=0, value=1100, step=50)
     
     st.subheader(t["cost_header"])
+    
+    # 默认 100 个货架
     num_shelves = st.slider(t["num_shelves"], min_value=1, max_value=101, value=100)
     
     costs = []
     cols = st.columns(4)
     for i in range(num_shelves):
         with cols[i % 4]:
-            c = st.number_input(t["shelf_cost"].format(i + 1), min_value=0.0, value=float(i + 1), step=1.0, key=f"cost_{i}")
+            c = st.number_input(
+                t["shelf_cost"].format(i + 1), 
+                min_value=0.0, 
+                value=float(i + 1), 
+                step=1.0, 
+                key=f"cost_{i}"
+            )
             costs.append(c)
     
     st.divider()
@@ -151,9 +180,12 @@ if prompt := st.chat_input(t["chat_placeholder"]):
             try:
                 current_params = f"[Current Parameters] Inbound: {inbound}, Outbound: {outbound}, Shelf Costs: {costs}."
                 full_prompt = f"{current_params}\n\nUser Question: {prompt}"
+                
                 response = chat_with_agent(full_prompt)
+                
                 st.markdown(response)
                 st.session_state.messages.append({"role": "assistant", "content": response})
+                
             except Exception as e:
                 error_msg = f"{t['error_prefix']}{str(e)}"
                 st.error(error_msg)
