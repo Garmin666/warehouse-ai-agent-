@@ -1,4 +1,4 @@
-"""仓库排班运筹助手（大模型总监版）。"""
+"""仓库排班运筹助手。"""
 from __future__ import annotations
 import json
 import os
@@ -21,15 +21,18 @@ except ImportError:
 
 ZHIPU_BASE_URL = "https://open.bigmodel.cn/api/paas/v4/"
 
+# 💡 强化语言指令：放到最前面，并强调必须遵守
 SYSTEM_PROMPT = (
-    "你是一个资深的供应链与物流总监。你拥有一个大型仓库（多货架、4个时段）的线性规划模型。\n"
-    "当用户询问问题时，请调用工具重新计算。\n"
-    "【必须遵守的规则】\n"
-    "1. 如果工具返回 Infeasible，请根据 error_reason 用大白话解释为什么装不下。\n"
-    "2. 如果算出结果，请报告 total_cost（最优成本）。\n"
-    "3. 【重要】你还需要向老板汇报 `labor_metrics`（人力情况）。请指出：理论需要多少人，实际排班需要多少人，如果公司有 20 人，现在的利用率是多少，闲置（surplus_workers）了几个人。\n"
-    "4. 如果用户问敏感性分析（影子价格），请先检查当前需求量是否等于最大容量。如果没满载，解释 shadow_inbound 和 shadow_outbound（多进/多出1批货，成本增加多少）。\n"
-    "5. 永远用用户提问的语言回复（中文问用中文，英文问用英文）。"
+    "【ABSOLUTE RULE - MUST FOLLOW】You MUST reply in the exact language requested in the prompt. "
+    "If the prompt says 'REPLY IN ENGLISH', you MUST output 100% English. If 'REPLY IN CHINESE', output 100% Chinese. "
+    "NEVER use Chinese if the requested language is English.\n\n"
+    "You are a senior Supply Chain Operations Research Expert. You have a linear programming model for warehouse scheduling.\n"
+    "When the user asks hypothetical questions, call the tool to recalculate.\n"
+    "1. If tool returns Infeasible, explain the error_reason and give suggestions.\n"
+    "2. If tool returns Error, apologize and ask the user to try again.\n"
+    "3. If tool returns Optimal, report the total_cost.\n"
+    "4. For sensitivity analysis, explain shadow_total_inbound and shadow_total_outbound.\n"
+    "5. Report labor_metrics: theoretical workers, actual workers needed, utilization rate, and surplus workers."
 )
 
 TOOLS = [
@@ -43,7 +46,7 @@ TOOLS = [
                 "properties": {
                     "inbound": {"type": "integer", "description": "Total inbound demand."},
                     "outbound": {"type": "integer", "description": "Total outbound demand."},
-                    "costs": {"type": "array", "items": {"type": "number"}, "description": "List of shelf costs (1 to 100)."},
+                    "costs": {"type": "array", "items": {"type": "number"}, "description": "List of shelf costs."},
                 },
                 "required": ["inbound", "outbound", "costs"],
                 "additionalProperties": False,
@@ -67,10 +70,9 @@ def run_warehouse_optimization(inbound=1150, outbound=1100, costs=None):
         "shadow_total_outbound": shadow.get("total_outbound"),
         "max_in_capacity": result.get("max_in_capacity"),
         "max_out_capacity": result.get("max_out_capacity"),
-        "labor_metrics": result.get("labor_metrics") # 把人力数据传给 AI
+        "labor_metrics": result.get("labor_metrics")
     }
 
-# 下面是常规的调用逻辑（和之前一样，无需改动）
 def _client():
     api_key = os.environ.get("ZHIPU_API_KEY")
     if not api_key: raise RuntimeError("ZHIPU_API_KEY is not set.")
